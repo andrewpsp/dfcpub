@@ -99,8 +99,8 @@ type metasyncer struct {
 		diamonds map[string]*daemonInfo
 		refused  map[string]*daemonInfo
 	}
-	chfeed     chan []interface{}
-	chfeedwait chan []interface{}
+	chfeed     chan []*revspair
+	chfeedwait chan []*revspair
 	chstop     chan struct{}
 	ticker     *time.Ticker
 }
@@ -112,8 +112,8 @@ func newmetasyncer(p *proxyrunner) (y *metasyncer) {
 	y.pending.diamonds = make(map[string]*daemonInfo)
 	y.pending.lock = &sync.Mutex{}
 	y.chstop = make(chan struct{}, 4)
-	y.chfeed = make(chan []interface{}, 16)
-	y.chfeedwait = make(chan []interface{})
+	y.chfeed = make(chan []*revspair, 16)
+	y.chfeedwait = make(chan []*revspair)
 
 	// create the ticker, do not need to start at start up
 	y.ticker = time.NewTicker(time.Duration(time.Hour))
@@ -121,7 +121,7 @@ func newmetasyncer(p *proxyrunner) (y *metasyncer) {
 	return
 }
 
-func (y *metasyncer) sync(wait bool, revsvec ...interface{}) {
+func (y *metasyncer) sync(wait bool, revsifvec ...interface{}) {
 	assert(y.p != nil)
 	if !y.p.primary {
 		lead := "?"
@@ -132,11 +132,17 @@ func (y *metasyncer) sync(wait bool, revsvec ...interface{}) {
 		return
 	}
 	// validate
-	for _, metaif := range revsvec {
-		if _, ok := metaif.(revs); !ok {
-			if _, ok = metaif.(*revspair); !ok {
-				assert(false, fmt.Sprintf("Expecting revs or revspair, getting %T instead", metaif))
-			}
+	revsvec := make([]*revspair, len(revsifvec))
+	for i, metaif := range revsifvec {
+		if pair, ok := metaif.(*revspair); ok {
+			revsvec[i] = pair
+			continue
+		}
+		if revs, ok := metaif.(revs); !ok {
+			assert(false, fmt.Sprintf("Expecting revs or revspair, getting %T instead", metaif))
+		} else {
+			pair := &revspair{revs, &ActionMsg{}}
+			revsvec[i] = pair
 		}
 	}
 
@@ -150,13 +156,13 @@ func (y *metasyncer) sync(wait bool, revsvec ...interface{}) {
 
 func (y *metasyncer) run() error {
 	glog.Infof("Starting %s", y.name)
-
+	var npendingprev int
 	for {
 		var npending int
 		select {
 		case revsvec := <-y.chfeedwait:
 			npending = y.dosync(revsvec)
-			var s []interface{}
+			var s []*revspair
 			y.chfeedwait <- s
 		case revsvec := <-y.chfeed:
 			npending = y.dosync(revsvec)
@@ -166,11 +172,12 @@ func (y *metasyncer) run() error {
 			y.ticker.Stop()
 			return nil
 		}
-
-		y.ticker.Stop()
-		if npending > 0 {
+		if npendingprev == 0 && npending > 0 {
 			y.ticker = time.NewTicker(ctx.config.Periodic.RetrySyncTime)
+		} else if npendingprev > 0 && npending == 0 {
+			y.ticker.Stop()
 		}
+		npendingprev = npending
 	}
 }
 
@@ -183,7 +190,7 @@ func (y *metasyncer) stop(err error) {
 	close(y.chfeedwait)
 }
 
-func (y *metasyncer) dosync(revsvec []interface{}) int {
+func (y *metasyncer) dosync(revsvec []*revspair) int {
 	var (
 		smap4bcast, smapSynced *Smap
 		jsbytes, jsmsg         []byte
@@ -195,18 +202,8 @@ func (y *metasyncer) dosync(revsvec []interface{}) int {
 	if v, ok := y.synced.copies[smaptag]; ok {
 		smapSynced = v.(*Smap)
 	}
-	for _, metaif := range revsvec {
-		var msg = &ActionMsg{}
-		// either (revs) or (revs, msg) pair
-		revs, ok1 := metaif.(revs)
-		if !ok1 {
-			mpair, ok2 := metaif.(*revspair)
-			assert(ok2)
-			revs, msg = mpair.revs, mpair.msg
-			if glog.V(3) {
-				glog.Infof("dosync tag=%s, msg=%+v", revs.tag(), msg)
-			}
-		}
+	for _, mpair := range revsvec {
+		revs, msg := mpair.revs, mpair.msg
 		tag := revs.tag()
 		jsbytes, err = revs.marshal()
 		assert(err == nil, err)

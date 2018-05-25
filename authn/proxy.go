@@ -55,6 +55,9 @@ func (p *proxy) detectPrimary() error {
 		return fmt.Errorf("Cluster map is empty")
 	}
 
+	// FIXME: it would be good to make a function that traverse daemon
+	// list and call it with Pmap and Tmap but at this moment daemonInfo
+	// struct is private, so there go two similar loops
 	for _, pinfo := range p.Smap.Pmap {
 		if pinfo.DirectURL == p.Url {
 			continue

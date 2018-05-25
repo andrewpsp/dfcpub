@@ -2119,7 +2119,7 @@ func (p *proxyrunner) httptokenpost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newAuth, err := newAuthList(tokenList)
+	newAuth, version, err := newAuthList(tokenList)
 	if err != nil {
 		s := fmt.Sprintf("Invalid token list: %v", err)
 		p.invalmsghdlr(w, r, s)
@@ -2129,6 +2129,7 @@ func (p *proxyrunner) httptokenpost(w http.ResponseWriter, r *http.Request) {
 	p.authn.Lock()
 	defer p.authn.Unlock()
 	p.authn.tokens = newAuth
+	p.authn.tokensVersion = version
 }
 
 // Read a token from request header and validates it

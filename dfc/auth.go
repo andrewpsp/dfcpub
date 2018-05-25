@@ -35,6 +35,7 @@ package dfc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,7 +55,8 @@ const (
 type (
 	// TokenList is a list of tokens pushed by authn after any token change
 	TokenList struct {
-		Tokens []string `json:"tokens"`
+		Tokens  []string `json:"tokens"`
+		Version int64    `json:"version,omitempty"`
 	}
 
 	authRec struct {
@@ -69,7 +71,8 @@ type (
 	authManager struct {
 		// decrypted token information from TokenList
 		sync.Mutex
-		tokens authList
+		tokens        authList
+		tokensVersion int64
 	}
 )
 
@@ -120,21 +123,21 @@ func decryptToken(tokenStr string) (*authRec, error) {
 }
 
 // Converts token list sent by authn and checks for correct format
-func newAuthList(tokenList *TokenList) (authList, error) {
+func newAuthList(tokenList *TokenList) (authList, int64, error) {
 	auth := make(map[string]*authRec)
 	if tokenList == nil || len(tokenList.Tokens) == 0 {
-		return auth, nil
+		return auth, 1, nil
 	}
 
 	for _, tokenStr := range tokenList.Tokens {
 		rec, err := decryptToken(tokenStr)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		auth[tokenStr] = rec
 	}
 
-	return auth, nil
+	return auth, tokenList.Version, nil
 }
 
 // Retreives a userID from context or empty string if nothing found
@@ -217,4 +220,35 @@ func (a *authManager) validateToken(token string) (*authRec, error) {
 	}
 
 	return auth, nil
+}
+
+var _ revs = &authManager{}
+
+func (a *authManager) tag() string {
+	return "token-list"
+}
+
+// func (a *authManager) cloneL() *TokenList {
+func (a *authManager) cloneL() interface{} {
+	a.Lock()
+	defer a.Unlock()
+
+	tlist := &TokenList{
+		Tokens:  make([]string, 0, 0),
+		Version: a.tokensVersion,
+	}
+	for token := range a.tokens {
+		tlist.Tokens = append(tlist.Tokens, token)
+	}
+
+	return tlist
+}
+func (a *authManager) version() int64 {
+	a.Lock()
+	defer a.Unlock()
+	return a.tokensVersion
+}
+func (a *authManager) marshal() ([]byte, error) {
+	tlist := a.cloneL()
+	return json.Marshal(tlist)
 }

@@ -33,16 +33,15 @@ type (
 		Expires time.Time `json:"expires"`
 		Token   string    `json:"token"`
 	}
-	tokenList struct {
-		Tokens []*tokenInfo `json:"tokens"`
-	}
 	userManager struct {
 		userMtx  sync.Mutex
 		tokenMtx sync.Mutex
 		Path     string               `json:"-"`
 		Users    map[string]*userInfo `json:"users"`
 		tokens   map[string]*tokenInfo
+		version  int64
 		client   *http.Client
+		proxy    *proxy
 	}
 )
 
@@ -69,16 +68,18 @@ func createHTTPClient() *http.Client {
 
 // Creates a new user manager. If user DB exists, it loads the data from the
 // file and decrypts passwords
-func newUserManager(dbPath string) *userManager {
+func newUserManager(dbPath string, proxy *proxy) *userManager {
 	var (
 		err   error
 		bytes []byte
 	)
 	mgr := &userManager{
-		Path:   dbPath,
-		Users:  make(map[string]*userInfo, 0),
-		tokens: make(map[string]*tokenInfo, 0),
-		client: createHTTPClient(),
+		Path:    dbPath,
+		Users:   make(map[string]*userInfo, 0),
+		tokens:  make(map[string]*tokenInfo, 0),
+		client:  createHTTPClient(),
+		proxy:   proxy,
+		version: 1,
 	}
 	if _, err = os.Stat(dbPath); err != nil {
 		if !os.IsNotExist(err) {
@@ -89,6 +90,19 @@ func newUserManager(dbPath string) *userManager {
 
 	if err = dfc.LocalLoad(dbPath, &mgr.Users); err != nil {
 		glog.Fatalf("Failed to load user list: %v\n", err)
+	}
+	tokenList := &dfc.TokenList{}
+	err = dfc.LocalLoad(mgr.Path+".tokens", tokenList)
+	if err == nil {
+		mgr.version = tokenList.Version
+		for _, tstr := range tokenList.Tokens {
+			tinfo, e := mgr.decryptToken(tstr)
+			if e != nil {
+				glog.Errorf("Invalid token: %s", e)
+				continue
+			}
+			mgr.tokens[tinfo.UserID] = tinfo
+		}
 	}
 
 	for _, info := range mgr.Users {
@@ -150,12 +164,56 @@ func (m *userManager) delUser(userID string) error {
 	m.tokenMtx.Lock()
 	_, ok := m.tokens[userID]
 	delete(m.tokens, userID)
+	if ok {
+		m.version++
+	}
 	m.tokenMtx.Unlock()
 	if ok {
 		go m.sendTokensToProxy()
 	}
 
 	return m.saveUsers()
+}
+
+func (m *userManager) decryptToken(tokenStr string) (*tokenInfo, error) {
+	var (
+		issueStr, expireStr string
+		invalTokenErr       = fmt.Errorf("Invalid token")
+	)
+	rec := &tokenInfo{}
+	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+
+		return []byte(conf.Auth.Secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return nil, invalTokenErr
+	}
+	if rec.UserID, ok = claims["username"].(string); !ok {
+		return nil, invalTokenErr
+	}
+	if issueStr, ok = claims["issued"].(string); !ok {
+		return nil, invalTokenErr
+	}
+	if rec.Issued, err = time.Parse(time.RFC822, issueStr); err != nil {
+		return nil, invalTokenErr
+	}
+	if expireStr, ok = claims["expires"].(string); !ok {
+		return nil, invalTokenErr
+	}
+	if rec.Expires, err = time.Parse(time.RFC822, expireStr); err != nil {
+		return nil, invalTokenErr
+	}
+	rec.Token = tokenStr
+
+	return rec, nil
 }
 
 // Generates a token for a user if user credentials are valid. If the token is
@@ -221,6 +279,7 @@ func (m *userManager) issueToken(userID, pwd string) (string, error) {
 	}
 	m.tokenMtx.Lock()
 	m.tokens[userID] = token
+	m.version++
 	m.tokenMtx.Unlock()
 	go m.sendTokensToProxy()
 
@@ -239,6 +298,9 @@ func (m *userManager) revokeToken(token string) {
 			break
 		}
 	}
+	if tokenDeleted {
+		m.version++
+	}
 	m.tokenMtx.Unlock()
 
 	if tokenDeleted {
@@ -248,8 +310,8 @@ func (m *userManager) revokeToken(token string) {
 
 // update list of valid token on a proxy
 func (m *userManager) sendTokensToProxy() {
-	if conf.Proxy.URL == "" {
-		glog.Error("Proxy is not defined")
+	if m.proxy.Url == "" {
+		glog.Error("Primary proxy is not defined")
 		return
 	}
 
@@ -264,25 +326,43 @@ func (m *userManager) sendTokensToProxy() {
 
 		tokenList.Tokens = append(tokenList.Tokens, tokenRec.Token)
 	}
+	tokenList.Version = m.version
 	m.tokenMtx.Unlock()
+	err := dfc.LocalSave(m.Path+".tokens", tokenList)
+	if err != nil {
+		glog.Errorf("Failed to save tokens: %v", err)
+	}
 
 	method := http.MethodPost
-	url := fmt.Sprintf("%s/%s/%s", conf.Proxy.URL, dfc.Rversion, dfc.Rtokens)
 	injson, _ := json.Marshal(tokenList)
-	request, err := http.NewRequest(method, url, bytes.NewBuffer(injson))
-	if err != nil {
-		glog.Error(err)
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := m.client.Do(request)
-	if err != nil {
-		glog.Errorf("Failed to http-call %s %s: error %v", method, url, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= http.StatusBadRequest {
-		glog.Errorf("Failed to http-call %s %s: error code %d", method, url, response.StatusCode)
+	for {
+		url := fmt.Sprintf("%s/%s/%s", m.proxy.Url, dfc.Rversion, dfc.Rtokens)
+		request, err := http.NewRequest(method, url, bytes.NewBuffer(injson))
+		if err != nil {
+			// Fatal - interrupt the loop
+			glog.Error(err)
+			return
+		}
+
+		request.Header.Set("Content-Type", "application/json")
+		response, err := m.client.Do(request)
+		if err != nil || (response != nil && response.StatusCode >= http.StatusBadRequest) {
+			glog.Errorf("Failed to http-call %s %s: error %v", method, url, err)
+			err = m.proxy.detectPrimary()
+			if err != nil {
+				// primary change is not detected or failed - interrupt the loop
+				glog.Errorf("Failed to send token list: %v", err)
+				return
+			}
+
+			m.proxy.saveSmap()
+			if response != nil && response.Body != nil {
+				response.Body.Close()
+			}
+		} else {
+			response.Body.Close()
+			break
+		}
 	}
 }
 

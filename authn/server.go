@@ -25,6 +25,7 @@ import (
 const (
 	pathUsers  = "users"
 	pathTokens = "tokens"
+	smapConfig = "smap.json"
 )
 
 // a message to generate token

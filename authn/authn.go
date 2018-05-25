@@ -66,8 +66,11 @@ func main() {
 		glog.Fatalf("Failed to set up logger: %v\n", err)
 	}
 
+	smapFile := filepath.Join(conf.ConfDir, smapConfig)
+	proxy := NewProxy(smapFile, conf.Proxy.URL)
+
 	dbPath := filepath.Join(conf.ConfDir, dbFile)
-	srv := newAuthServ(newUserManager(dbPath))
+	srv := newAuthServ(newUserManager(dbPath, proxy))
 	if err := srv.run(); err != nil {
 		glog.Fatalf(err.Error())
 	}

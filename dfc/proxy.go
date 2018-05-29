@@ -207,7 +207,6 @@ func (p *proxyrunner) run() error {
 	p.httprunner.registerhdlr("/"+Rversion+"/"+Rhealth, p.httphealth)
 	p.httprunner.registerhdlr("/"+Rversion+"/"+Rvote+"/", p.votehdlr)
 	p.httprunner.registerhdlr("/"+Rversion+"/"+Rtokens, p.tokenhdlr)
-	p.httprunner.registerhdlr("/"+Rversion+"/"+Rusers, p.userhdlr)
 	p.httprunner.registerhdlr("/", invalhdlr)
 
 	glog.Infof("Proxy %s is ready, primary=%t", p.si.DaemonID, p.primary)
@@ -1696,22 +1695,6 @@ func (p *proxyrunner) tokenhdlr(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		p.httptokenpost(w, r)
-	default:
-		invalhdlr(w, r)
-	}
-}
-
-// handler for: "/"+Rversion+"/"+Rusers
-func (p *proxyrunner) userhdlr(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPut:
-		// Add a new credentials
-		// p.httpuserput(w, r)
-		invalhdlr(w, r)
-	case http.MethodDelete:
-		// Remove a credentials or a user with all user's credentials
-		// p.httpuserdel(w, r)
-		invalhdlr(w, r)
 	default:
 		invalhdlr(w, r)
 	}

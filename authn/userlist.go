@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NVIDIA/dfcpub/dfc"
@@ -141,8 +142,8 @@ func (m *userManager) addUser(userID, userPass string) error {
 		passwordDecoded: userPass,
 		Password:        base64.StdEncoding.EncodeToString([]byte(userPass)),
 	}
-	m.version++
 	m.userMtx.Unlock()
+	atomic.AddInt64(&m.version, 1)
 
 	// clean up in case of there is an old token issued for the same UserID
 	m.tokenMtx.Lock()
@@ -160,8 +161,8 @@ func (m *userManager) delUser(userID string) error {
 		return fmt.Errorf("User %s does not exist", userID)
 	}
 	delete(m.Users, userID)
-	m.version++
 	m.userMtx.Unlock()
+	atomic.AddInt64(&m.version, 1)
 
 	m.tokenMtx.Lock()
 	_, ok := m.tokens[userID]
@@ -278,8 +279,8 @@ func (m *userManager) issueToken(userID, pwd string) (string, error) {
 	}
 	m.tokenMtx.Lock()
 	m.tokens[userID] = token
-	m.version++
 	m.tokenMtx.Unlock()
+	atomic.AddInt64(&m.version, 1)
 	go m.sendTokensToProxy()
 
 	return tokenString, nil
@@ -297,12 +298,10 @@ func (m *userManager) revokeToken(token string) {
 			break
 		}
 	}
-	if tokenDeleted {
-		m.version++
-	}
 	m.tokenMtx.Unlock()
 
 	if tokenDeleted {
+		atomic.AddInt64(&m.version, 1)
 		go m.sendTokensToProxy()
 	}
 }
@@ -325,8 +324,8 @@ func (m *userManager) sendTokensToProxy() {
 
 		tokenList.Tokens = append(tokenList.Tokens, tokenRec.Token)
 	}
-	tokenList.Version = m.version
 	m.tokenMtx.Unlock()
+	tokenList.Version = atomic.LoadInt64(&m.version)
 	err := dfc.LocalSave(m.Path+".tokens", tokenList)
 	if err != nil {
 		glog.Errorf("Failed to save tokens: %v", err)

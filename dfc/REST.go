@@ -204,5 +204,5 @@ const (
 	Rvoteinit  = "init"
 	Rtokens    = "tokens"
 	Rmetasync  = "metasync"
-	Rusers     = "users"
+	Rcreds     = "credentials"
 )

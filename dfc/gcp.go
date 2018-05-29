@@ -95,7 +95,7 @@ func createClient(ct context.Context) (*storage.Client, context.Context, string,
 		return defaultClient(gctx)
 	}
 
-	credPath, err := userCredsPathFromContext(ct, userID)
+	credPath, err := userCredsPathFromContext(ct, userID, ProviderGoogle)
 	if err != nil {
 		glog.Errorf("Failed to read user credentials: %v", err)
 		return defaultClient(gctx)

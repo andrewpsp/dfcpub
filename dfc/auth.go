@@ -47,9 +47,11 @@ import (
 )
 
 const (
-	ctxUserID    = "userID"      // a field name of a context that contains userID
-	ctxCredsDir  = "credDir"     // a field of a context that contains path to directory with credentials
-	awsCredsFile = "credentials" // a default AWS file with user credentials
+	ctxUserID    = "userID"         // a field name of a context that contains userID
+	ctxCredsDir  = "credDir"        // a field of a context that contains path to directory with credentials
+	awsCredsFile = "credentials"    // a default AWS file with user credentials
+	gcpCredsFile = "gcp_creds.json" // a default GOOGLE file with user credentials
+	dfcCredsFile = "gcp_creds.json" // a default DFC file with user credentials
 )
 
 type (
@@ -155,13 +157,27 @@ func userIDFromContext(ct context.Context) string {
 	return userID
 }
 
-// Reads a directory with user credentials files.
-// userID should be empty for AWS and set for GCP.
-// If it is found it does additional checks:
-// - it is a directory, not a file
-// - it contains a file with user credentials (for AWS it looks for 'credentials' file, for GCP - "${userID}.json"
+func pathToCredentials(baseDir, provider, userID string) string {
+	credPath := filepath.Join(baseDir, provider, userID)
+	switch provider {
+	case ProviderAmazon:
+		credPath = filepath.Join(credPath, awsCredsFile)
+	case ProviderGoogle:
+		credPath = filepath.Join(credPath, gcpCredsFile)
+	case ProviderDfc:
+		credPath = filepath.Join(credPath, dfcCredsFile)
+	default:
+		glog.Errorf("Invalid cloud provider: %s", provider)
+	}
+	return credPath
+}
+
+// Reads a directory with user credentials file.
+// All credentials file paths should follow the rule:
+//		<ctx.CredsDir>/<provider>/<userID>/<fileNameForProvider>
+// Provider is the type of storage: AWS, GCP or DFC (Provider* constants in REST.go)
 // Returns a full path to file with credentials or error
-func userCredsPathFromContext(ct context.Context, userID string) (string, error) {
+func userCredsPathFromContext(ct context.Context, userID, provider string) (string, error) {
 	dirIf := ct.Value(ctxCredsDir)
 	if dirIf == nil {
 		return "", fmt.Errorf("Directory is not defined")
@@ -172,24 +188,8 @@ func userCredsPathFromContext(ct context.Context, userID string) (string, error)
 		return "", fmt.Errorf("%s expected string type but it is %T (%v)", ctxCredsDir, dirIf, dirIf)
 	}
 
-	stat, err := os.Stat(credDir)
-	if err != nil {
-		return "", fmt.Errorf("Invalid directory: %v", err)
-	}
-	if !stat.IsDir() {
-		return "", fmt.Errorf("%s is not a directory", credDir)
-	}
-
-	var credPath string
-	if userID == "" {
-		// AWS way - one file for all users
-		credPath = filepath.Join(credDir, awsCredsFile)
-	} else {
-		// GCP way - every user in a separate file
-		credPath = filepath.Join(credDir, userID+".json")
-	}
-
-	stat, err = os.Stat(credPath)
+	credPath := pathToCredentials(credDir, provider, userID)
+	stat, err := os.Stat(credPath)
 	if err != nil {
 		glog.Errorf("Failed to open credential file: %v", err)
 		return "", fmt.Errorf("Failed to open credentials file")

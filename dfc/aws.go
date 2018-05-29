@@ -71,7 +71,7 @@ func createSession(ct context.Context) *session.Session {
 			SharedConfigState: session.SharedConfigEnable}))
 	}
 
-	credFile, err := userCredsPathFromContext(ct, "")
+	credFile, err := userCredsPathFromContext(ct, userID, ProviderAmazon)
 	if err != nil {
 		glog.Errorf("Failed to read user credentials: %v", err)
 		return session.Must(session.NewSessionWithOptions(session.Options{

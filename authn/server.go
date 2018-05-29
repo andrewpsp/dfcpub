@@ -76,6 +76,10 @@ func isSyscallWriteError(err error) bool {
 	}
 }
 
+func isValidProvider(prov string) bool {
+	return prov == dfc.ProviderAmazon || prov == dfc.ProviderGoogle || prov == dfc.ProviderDfc
+}
+
 //-------------------------------------
 // auth server
 //-------------------------------------
@@ -124,28 +128,30 @@ func (a *authServ) run() error {
 	return nil
 }
 
-func (a *authServ) registerhdlr(path string, handler func(http.ResponseWriter, *http.Request)) {
+func (a *authServ) registerHandler(path string, handler func(http.ResponseWriter, *http.Request)) {
 	a.mux.HandleFunc(path, handler)
 }
 
 func (a *authServ) registerPublicHandlers() {
-	a.registerhdlr(fmt.Sprintf("/%s/%s", dfc.Rversion, pathUsers), a.userhdlr)
-	a.registerhdlr(fmt.Sprintf("/%s/%s/", dfc.Rversion, pathUsers), a.userhdlr)
-	a.registerhdlr(fmt.Sprintf("/%s/%s", dfc.Rversion, pathTokens), a.tokenhdlr)
+	a.registerHandler(fmt.Sprintf("/%s/%s", dfc.Rversion, pathUsers), a.userHandler)
+	a.registerHandler(fmt.Sprintf("/%s/%s/", dfc.Rversion, pathUsers), a.userHandler)
+	a.registerHandler(fmt.Sprintf("/%s/%s", dfc.Rversion, pathTokens), a.tokenHandler)
 }
 
-func (a *authServ) userhdlr(w http.ResponseWriter, r *http.Request) {
+func (a *authServ) userHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodDelete:
 		a.httpUserDel(w, r)
 	case http.MethodPost:
 		a.httpUserPost(w, r)
+	case http.MethodPut:
+		a.httpUserPut(w, r)
 	default:
 		invalhdlr(w, r, "Unsupported method", http.StatusBadRequest)
 	}
 }
 
-func (a *authServ) tokenhdlr(w http.ResponseWriter, r *http.Request) {
+func (a *authServ) tokenHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodDelete:
 		a.httpRevokeToken(w, r)
@@ -188,7 +194,7 @@ func (a *authServ) httpRevokeToken(w http.ResponseWriter, r *http.Request) {
 
 func (a *authServ) httpUserDel(w http.ResponseWriter, r *http.Request) {
 	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
-	if len(apiItems) != 1 {
+	if len(apiItems) == 0 {
 		invalhdlr(w, r, "User name is not defined", http.StatusBadRequest)
 		return
 	}
@@ -199,9 +205,13 @@ func (a *authServ) httpUserDel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = a.users.delUser(apiItems[0]); err != nil {
-		glog.Errorf("Failed to delete user: %v\n", err)
-		invalhdlr(w, r, "Failed to delete user")
+	if len(apiItems) == 1 {
+		if err = a.users.delUser(apiItems[0]); err != nil {
+			glog.Errorf("Failed to delete user: %v\n", err)
+			invalhdlr(w, r, "Failed to delete user")
+		}
+	} else {
+		a.userRemoveCredentials(w, r)
 	}
 }
 
@@ -212,6 +222,15 @@ func (a *authServ) httpUserPost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		a.userLogin(w, r)
 	}
+}
+
+func (a *authServ) httpUserPut(w http.ResponseWriter, r *http.Request) {
+	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
+	if len(apiItems) < 2 {
+		invalhdlr(w, r, "Invalid request")
+		return
+	}
+	a.userChangeCredentials(w, r)
 }
 
 // Adds a new user to user list
@@ -357,4 +376,120 @@ func (a *authServ) readJSON(w http.ResponseWriter, r *http.Request, out interfac
 		return err
 	}
 	return nil
+}
+
+// Updates user credentials
+func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request) {
+	err := a.checkAuthorization(w, r)
+	if err != nil {
+		glog.Errorf("Not authorized: %v\n", err)
+		return
+	}
+
+	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
+	userName := apiItems[0]
+	provider := apiItems[1]
+	if !isValidProvider(provider) {
+		errmsg := fmt.Sprintf("Invalid cloud provider: %s", provider)
+		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+		return
+	}
+
+	b, err := ioutil.ReadAll(r.Body)
+	if len(b) == 0 {
+		invalhdlr(w, r, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if glog.V(4) {
+		glog.Infof("Received credentials for %s\n", userName)
+	}
+
+	a.users.userMtx.Lock()
+	user, ok := a.users.Users[userName]
+	if !ok {
+		a.users.userMtx.Unlock()
+		errmsg := fmt.Sprintf("User %s does not exist", userName)
+		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+		return
+	}
+	if glog.V(4) {
+		if creds, ok := user.Creds[provider]; ok && creds != "" {
+			oldCreds := creds
+			if len(creds) > 32 {
+				oldCreds = creds[:32] + "..."
+			}
+			newCreds := string(b)
+			if len(newCreds) > 32 {
+				newCreds = newCreds[:32] + "..."
+			}
+			glog.Infof("Replacing user %s credentials: %s <- %s", userName, oldCreds, newCreds)
+		}
+	}
+	changed := user.Creds[provider] != string(b)
+	if changed {
+		user.Creds[provider] = string(b)
+	}
+	a.users.userMtx.Unlock()
+
+	if changed {
+		a.users.increaseVersion()
+		if err := a.users.saveUsers(); err != nil {
+			glog.Errorf("Failed to save user credentials: %v", err)
+		}
+		go a.users.sendCredsToProxy()
+	}
+
+	msg := []byte("Credentials updated successfully")
+	a.writeJSON(w, r, msg, "update credentials")
+}
+
+// Removes user credentials
+func (a *authServ) userRemoveCredentials(w http.ResponseWriter, r *http.Request) {
+	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
+	userName := apiItems[0]
+	provider := apiItems[1]
+	if !isValidProvider(provider) {
+		errmsg := fmt.Sprintf("Invalid cloud provider: %s", provider)
+		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+		return
+	}
+
+	if glog.V(4) {
+		glog.Infof("Removing %s credentials for %s\n", provider, userName)
+	}
+
+	a.users.userMtx.Lock()
+	user, ok := a.users.Users[userName]
+	if !ok {
+		a.users.userMtx.Unlock()
+		errmsg := fmt.Sprintf("User %s does not exist", userName)
+		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+		return
+	}
+	creds, ok := user.Creds[provider]
+	if !ok {
+		a.users.userMtx.Unlock()
+		glog.Infof("User %s does not have %s credentials - skipping", userName)
+		msg := []byte("Credentials updated successfully")
+		a.writeJSON(w, r, msg, "remove credentials")
+		return
+	}
+	if glog.V(4) {
+		if len(creds) > 32 {
+			creds = creds[:32] + "..."
+		}
+		glog.Infof("Removing user %s credentials: %s <- %s", userName, creds)
+	}
+	delete(user.Creds, provider)
+	a.users.userMtx.Unlock()
+
+	a.users.increaseVersion()
+	if err := a.users.saveUsers(); err != nil {
+		glog.Errorf("Failed to save user credentials: %v", err)
+	}
+	go a.users.sendCredsToProxy()
+
+	msg := []byte("Credentials updated successfully")
+	a.writeJSON(w, r, msg, "update credentials")
 }

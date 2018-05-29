@@ -18,15 +18,16 @@ import (
 )
 
 const (
-	dbFile = "users.json"
+	dbFile       = "users.json"
+	proxyTimeout = time.Minute * 2
 )
 
 type (
 	userInfo struct {
-		UserID          string `json:"name"`
-		Password        string `json:"password,omitempty"`
+		UserID          string            `json:"name"`
+		Password        string            `json:"password,omitempty"`
+		Creds           map[string]string `json:"creds,omitempty"`
 		passwordDecoded string
-		Creds           map[string]string `json:"creds,omitempty"` //TODO: aws?gcp?
 	}
 	tokenInfo struct {
 		UserID  string    `json:"username"`
@@ -37,10 +38,10 @@ type (
 	userManager struct {
 		userMtx  sync.Mutex
 		tokenMtx sync.Mutex
+		Version  int64                `json:"version"`
 		Path     string               `json:"-"`
 		Users    map[string]*userInfo `json:"users"`
 		tokens   map[string]*tokenInfo
-		version  int64
 		client   *http.Client
 		proxy    *proxy
 	}
@@ -80,7 +81,7 @@ func newUserManager(dbPath string, proxy *proxy) *userManager {
 		tokens:  make(map[string]*tokenInfo, 0),
 		client:  createHTTPClient(),
 		proxy:   proxy,
-		version: 1,
+		Version: 1,
 	}
 	if _, err = os.Stat(dbPath); err != nil {
 		if !os.IsNotExist(err) {
@@ -95,7 +96,7 @@ func newUserManager(dbPath string, proxy *proxy) *userManager {
 	tokenList := &dfc.TokenList{}
 	err = dfc.LocalLoad(mgr.Path+".tokens", tokenList)
 	if err == nil {
-		mgr.version = tokenList.Version
+		mgr.Version = tokenList.Version
 		for _, tstr := range tokenList.Tokens {
 			tinfo, e := mgr.decryptToken(tstr)
 			if e != nil {
@@ -143,7 +144,7 @@ func (m *userManager) addUser(userID, userPass string) error {
 		Password:        base64.StdEncoding.EncodeToString([]byte(userPass)),
 	}
 	m.userMtx.Unlock()
-	atomic.AddInt64(&m.version, 1)
+	m.increaseVersion()
 
 	// clean up in case of there is an old token issued for the same UserID
 	m.tokenMtx.Lock()
@@ -166,7 +167,7 @@ func (m *userManager) delUser(userID string) error {
 	}
 	delete(m.Users, userID)
 	m.userMtx.Unlock()
-	atomic.AddInt64(&m.version, 1)
+	m.increaseVersion()
 
 	m.tokenMtx.Lock()
 	_, ok := m.tokens[userID]
@@ -284,7 +285,7 @@ func (m *userManager) issueToken(userID, pwd string) (string, error) {
 	m.tokenMtx.Lock()
 	m.tokens[userID] = token
 	m.tokenMtx.Unlock()
-	atomic.AddInt64(&m.version, 1)
+	m.increaseVersion()
 	go m.sendTokensToProxy()
 
 	return tokenString, nil
@@ -305,7 +306,7 @@ func (m *userManager) revokeToken(token string) {
 	m.tokenMtx.Unlock()
 
 	if tokenDeleted {
-		atomic.AddInt64(&m.version, 1)
+		m.increaseVersion()
 		go m.sendTokensToProxy()
 	}
 }
@@ -329,42 +330,15 @@ func (m *userManager) sendTokensToProxy() {
 		tokenList.Tokens = append(tokenList.Tokens, tokenRec.Token)
 	}
 	m.tokenMtx.Unlock()
-	tokenList.Version = atomic.LoadInt64(&m.version)
+	tokenList.Version = atomic.LoadInt64(&m.Version)
 	err := dfc.LocalSave(m.Path+".tokens", tokenList)
 	if err != nil {
 		glog.Errorf("Failed to save tokens: %v", err)
 	}
 
-	method := http.MethodPost
 	injson, _ := json.Marshal(tokenList)
-	for {
-		url := fmt.Sprintf("%s/%s/%s", m.proxy.Url, dfc.Rversion, dfc.Rtokens)
-		request, err := http.NewRequest(method, url, bytes.NewBuffer(injson))
-		if err != nil {
-			// Fatal - interrupt the loop
-			glog.Error(err)
-			return
-		}
-
-		request.Header.Set("Content-Type", "application/json")
-		response, err := m.client.Do(request)
-		if err != nil || (response != nil && response.StatusCode >= http.StatusBadRequest) {
-			glog.Errorf("Failed to http-call %s %s: error %v", method, url, err)
-			err = m.proxy.detectPrimary()
-			if err != nil {
-				// primary change is not detected or failed - interrupt the loop
-				glog.Errorf("Failed to send token list: %v", err)
-				return
-			}
-
-			m.proxy.saveSmap()
-			if response != nil && response.Body != nil {
-				response.Body.Close()
-			}
-		} else {
-			response.Body.Close()
-			break
-		}
+	if err := m.proxyRequest(http.MethodPost, dfc.Rtokens, injson); err != nil {
+		glog.Errorf("Failed to send credentials list: %v", err)
 	}
 }
 
@@ -390,4 +364,66 @@ func (m *userManager) userByToken(token string) (*userInfo, error) {
 	}
 
 	return nil, fmt.Errorf("Token not found")
+}
+
+func (m *userManager) increaseVersion() {
+	atomic.AddInt64(&m.Version, 1)
+}
+
+func (m *userManager) proxyRequest(method, path string, injson []byte) error {
+	startRequest := time.Now()
+	for {
+		url := fmt.Sprintf("%s/%s/%s", m.proxy.Url, dfc.Rversion, path)
+		request, err := http.NewRequest(method, url, bytes.NewBuffer(injson))
+		if err != nil {
+			// Fatal - interrupt the loop
+			return err
+		}
+
+		request.Header.Set("Content-Type", "application/json")
+		response, err := m.client.Do(request)
+
+		if err != nil || (response != nil && response.StatusCode >= http.StatusBadRequest) {
+			glog.Errorf("Failed to http-call %s %s: error %v", method, url, err)
+			err = m.proxy.detectPrimary()
+			if err != nil {
+				// primary change is not detected or failed - interrupt the loop
+				return err
+			}
+
+			m.proxy.saveSmap()
+			if response != nil && response.Body != nil {
+				response.Body.Close()
+			}
+		} else {
+			response.Body.Close()
+			return nil
+		}
+
+		if time.Since(startRequest) > proxyTimeout {
+			return fmt.Errorf("Sending data to primary proxy timed out")
+		}
+	}
+}
+
+// update list of credentials on a proxy
+func (m *userManager) sendCredsToProxy() {
+	if m.proxy.Url == "" {
+		glog.Warning("Primary proxy is not defined")
+		return
+	}
+
+	m.tokenMtx.Lock()
+	m.userMtx.Lock()
+	injson, err := json.Marshal(m)
+	m.userMtx.Unlock()
+	m.tokenMtx.Unlock()
+	if err != nil {
+		glog.Errorf("Failed to marshal credentials list: %v", err)
+		return
+	}
+
+	if err := m.proxyRequest(http.MethodPost, dfc.Rcreds, injson); err != nil {
+		glog.Errorf("Failed to send credentials list: %v", err)
+	}
 }

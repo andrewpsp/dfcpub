@@ -147,8 +147,12 @@ func (m *userManager) addUser(userID, userPass string) error {
 
 	// clean up in case of there is an old token issued for the same UserID
 	m.tokenMtx.Lock()
+	_, ok := m.tokens[userID]
 	delete(m.tokens, userID)
 	m.tokenMtx.Unlock()
+	if ok {
+		go m.sendTokensToProxy()
+	}
 
 	return m.saveUsers()
 }

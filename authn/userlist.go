@@ -141,6 +141,7 @@ func (m *userManager) addUser(userID, userPass string) error {
 		passwordDecoded: userPass,
 		Password:        base64.StdEncoding.EncodeToString([]byte(userPass)),
 	}
+	m.version++
 	m.userMtx.Unlock()
 
 	// clean up in case of there is an old token issued for the same UserID
@@ -159,14 +160,12 @@ func (m *userManager) delUser(userID string) error {
 		return fmt.Errorf("User %s does not exist", userID)
 	}
 	delete(m.Users, userID)
+	m.version++
 	m.userMtx.Unlock()
 
 	m.tokenMtx.Lock()
 	_, ok := m.tokens[userID]
 	delete(m.tokens, userID)
-	if ok {
-		m.version++
-	}
 	m.tokenMtx.Unlock()
 	if ok {
 		go m.sendTokensToProxy()
@@ -311,7 +310,7 @@ func (m *userManager) revokeToken(token string) {
 // update list of valid token on a proxy
 func (m *userManager) sendTokensToProxy() {
 	if m.proxy.Url == "" {
-		glog.Error("Primary proxy is not defined")
+		glog.Warning("Primary proxy is not defined")
 		return
 	}
 

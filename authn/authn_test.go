@@ -32,11 +32,16 @@ func createUsers(mgr *userManager, t *testing.T) {
 		t.Fatalf("Invalid path used for user list: %s", mgr.Path)
 	}
 
+	vers := mgr.version
 	for idx := range users {
 		err = mgr.addUser(users[idx], passs[idx])
 		if err != nil {
 			t.Errorf("Failed to create a user %s: %v", users[idx], err)
 		}
+		if vers >= mgr.version {
+			t.Error("Version must increase")
+		}
+		vers = mgr.version
 	}
 
 	if len(mgr.Users) != len(users) {
@@ -52,6 +57,7 @@ func createUsers(mgr *userManager, t *testing.T) {
 
 func deleteUsers(mgr *userManager, skipNotExist bool, t *testing.T) {
 	var err error
+	vers := mgr.version
 	for _, username := range users {
 		err = mgr.delUser(username)
 		if err != nil {
@@ -59,6 +65,10 @@ func deleteUsers(mgr *userManager, skipNotExist bool, t *testing.T) {
 				t.Errorf("Failed to delete user %s: %v", username, err)
 			}
 		}
+		if vers >= mgr.version {
+			t.Error("Version must increase")
+		}
+		vers = mgr.version
 	}
 
 	err = os.Remove(dbPath)
@@ -73,15 +83,20 @@ func testInvalidUser(mgr *userManager, t *testing.T) {
 		t.Errorf("User with the existing name %s was created: %v", users[0], err)
 	}
 
+	vers := mgr.version
 	nonexisting := "someuser"
 	err = mgr.delUser(nonexisting)
+	if vers != mgr.version {
+		t.Error("Version has changed")
+	}
 	if err == nil || !strings.Contains(err.Error(), "") {
 		t.Errorf("Non-existing user %s was deleted: %v", nonexisting, err)
 	}
 }
 
 func reloadFromFile(mgr *userManager, t *testing.T) {
-	newmgr := newUserManager(dbPath)
+	proxy := &proxy{Url: ""}
+	newmgr := newUserManager(dbPath, proxy)
 	if newmgr == nil {
 		t.Error("New manager has not been created")
 	}
@@ -100,6 +115,7 @@ func testUserDelete(mgr *userManager, t *testing.T) {
 		username = "newuser"
 		userpass = "newpass"
 	)
+	vers := mgr.version
 	err := mgr.addUser(username, userpass)
 	if err != nil {
 		t.Errorf("Failed to create a user %s: %v", username, err)
@@ -107,11 +123,19 @@ func testUserDelete(mgr *userManager, t *testing.T) {
 	if len(mgr.Users) != len(users)+1 {
 		t.Errorf("Expected %d users but found %d", len(users)+1, len(mgr.Users))
 	}
+	if vers >= mgr.version {
+		t.Errorf("Version must increase: %d - %d", vers, mgr.version)
+	}
+	vers = mgr.version
 
 	token, err := mgr.issueToken(username, userpass)
 	if err != nil || token == "" {
 		t.Errorf("Failed to generate token for %s: %v", username, err)
 	}
+	if vers >= mgr.version {
+		t.Errorf("Version must increase: %d - %d", vers, mgr.version)
+	}
+	vers = mgr.version
 
 	err = mgr.delUser(username)
 	if err != nil {
@@ -120,14 +144,22 @@ func testUserDelete(mgr *userManager, t *testing.T) {
 	if len(mgr.Users) != len(users) {
 		t.Errorf("Expected %d users but found %d", len(users), len(mgr.Users))
 	}
+	if vers >= mgr.version {
+		t.Errorf("Version must increase: %d - %d", vers, mgr.version)
+	}
+	vers = mgr.version
 	token, err = mgr.issueToken(username, userpass)
 	if token != "" || err == nil || !strings.Contains(err.Error(), "credential") {
 		t.Errorf("Token issued for deleted user  %s: %v", username, token)
 	}
+	if vers != mgr.version {
+		t.Error("Version has changed: %d - %d", vers, mgr.version)
+	}
 }
 
 func Test_manager(t *testing.T) {
-	mgr := newUserManager(dbPath)
+	proxy := &proxy{Url: ""}
+	mgr := newUserManager(dbPath, proxy)
 	if mgr == nil {
 		t.Fatal("Manager has not been created")
 	}
@@ -144,13 +176,15 @@ func Test_token(t *testing.T) {
 		token string
 	)
 
-	mgr := newUserManager(dbPath)
+	proxy := &proxy{Url: ""}
+	mgr := newUserManager(dbPath, proxy)
 	if mgr == nil {
 		t.Fatal("Manager has not been created")
 	}
 	createUsers(mgr, t)
 
 	// correct user creds
+	vers := mgr.version
 	token, err = mgr.issueToken(users[1], passs[1])
 	if err != nil || token == "" {
 		t.Errorf("Failed to generate token for %s: %v", users[1], err)
@@ -166,11 +200,18 @@ func Test_token(t *testing.T) {
 			t.Errorf("Invalid user %s returned for token %v", info.UserID, token)
 		}
 	}
+	if vers >= mgr.version {
+		t.Errorf("Version must increase: %d - %d", vers, mgr.version)
+	}
+	vers = mgr.version
 
 	// incorrect user creds
 	tokenInval, err := mgr.issueToken(users[1], passs[0])
 	if tokenInval != "" || err == nil {
 		t.Errorf("Some token generated for incorrect user creds: %v", tokenInval)
+	}
+	if vers != mgr.version {
+		t.Error("Version has changed: %d - %d", vers, mgr.version)
 	}
 
 	// expired token test
@@ -204,6 +245,9 @@ func Test_token(t *testing.T) {
 			t.Error("No error for revoked token")
 		} else if !strings.Contains(err.Error(), "not found") {
 			t.Errorf("Invalid error: %v", err)
+		}
+		if vers >= mgr.version {
+			t.Error("Version must increase")
 		}
 	}
 

@@ -93,6 +93,12 @@ func newUserManager(dbPath string, proxy *proxy) *userManager {
 	if err = dfc.LocalLoad(dbPath, &mgr.Users); err != nil {
 		glog.Fatalf("Failed to load user list: %v\n", err)
 	}
+	// update loaded list: create empty map for users who do not have credentials in saved file
+	for _, uinfo := range mgr.Users {
+		if uinfo.Creds == nil {
+			uinfo.Creds = make(map[string]string, 0)
+		}
+	}
 	tokenList := &dfc.TokenList{}
 	err = dfc.LocalLoad(mgr.Path+".tokens", tokenList)
 	if err == nil {
@@ -142,6 +148,7 @@ func (m *userManager) addUser(userID, userPass string) error {
 		UserID:          userID,
 		passwordDecoded: userPass,
 		Password:        base64.StdEncoding.EncodeToString([]byte(userPass)),
+		Creds:           make(map[string]string, 0),
 	}
 	m.userMtx.Unlock()
 	m.increaseVersion()
@@ -432,6 +439,10 @@ func (m *userManager) updateCredentials(userID, provider, userCreds string) (boo
 	m.userMtx.Lock()
 	defer m.userMtx.Unlock()
 
+	if !isValidProvider(provider) {
+		return false, fmt.Errorf("Invalid cloud provider: %s", provider)
+	}
+
 	user, ok := m.Users[userID]
 	if !ok {
 		err := fmt.Errorf("User %s does not exist", userID)
@@ -453,6 +464,7 @@ func (m *userManager) updateCredentials(userID, provider, userCreds string) (boo
 	changed := user.Creds[provider] != userCreds
 	if changed {
 		user.Creds[provider] = userCreds
+		m.increaseVersion()
 	}
 
 	return changed, nil
@@ -461,6 +473,10 @@ func (m *userManager) updateCredentials(userID, provider, userCreds string) (boo
 func (m *userManager) deleteCredentials(userID, provider string) (bool, error) {
 	m.userMtx.Lock()
 	defer m.userMtx.Unlock()
+
+	if !isValidProvider(provider) {
+		return false, fmt.Errorf("Invalid cloud provider: %s", provider)
+	}
 
 	user, ok := m.Users[userID]
 	if !ok {
@@ -477,6 +493,7 @@ func (m *userManager) deleteCredentials(userID, provider string) (bool, error) {
 		}
 		glog.Infof("Removing user %s credentials: %s", userID, creds)
 	}
+	m.increaseVersion()
 	delete(user.Creds, provider)
 	return true, nil
 }

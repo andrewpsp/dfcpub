@@ -389,11 +389,6 @@ func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request)
 	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
 	userID := apiItems[0]
 	provider := apiItems[1]
-	if !isValidProvider(provider) {
-		errmsg := fmt.Sprintf("Invalid cloud provider: %s", provider)
-		invalhdlr(w, r, errmsg, http.StatusBadRequest)
-		return
-	}
 
 	b, err := ioutil.ReadAll(r.Body)
 	if len(b) == 0 {
@@ -412,7 +407,6 @@ func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request)
 	}
 
 	if changed {
-		a.users.increaseVersion()
 		if err := a.users.saveUsers(); err != nil {
 			glog.Errorf("Failed to save user credentials: %v", err)
 		}
@@ -450,7 +444,6 @@ func (a *authServ) userRemoveCredentials(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	a.users.increaseVersion()
 	if err := a.users.saveUsers(); err != nil {
 		glog.Errorf("Failed to save user credentials: %v", err)
 	}

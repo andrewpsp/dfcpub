@@ -312,13 +312,13 @@ func (a *authServ) userLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userName := apiItems[0]
+	userID := apiItems[0]
 	pass := msg.Password
 	if glog.V(4) {
-		glog.Infof("User: %s, pass: %s\n", userName, pass)
+		glog.Infof("User: %s, pass: %s\n", userID, pass)
 	}
 
-	tokenString, err := a.users.issueToken(userName, pass)
+	tokenString, err := a.users.issueToken(userID, pass)
 	if err != nil {
 		glog.Errorf("Failed to generate token: %v\n", err)
 		invalhdlr(w, r, "Not authorized", http.StatusUnauthorized)
@@ -387,7 +387,7 @@ func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request)
 	}
 
 	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
-	userName := apiItems[0]
+	userID := apiItems[0]
 	provider := apiItems[1]
 	if !isValidProvider(provider) {
 		errmsg := fmt.Sprintf("Invalid cloud provider: %s", provider)
@@ -402,35 +402,14 @@ func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request)
 	}
 
 	if glog.V(4) {
-		glog.Infof("Received credentials for %s\n", userName)
+		glog.Infof("Received credentials for %s\n", userID)
 	}
 
-	a.users.userMtx.Lock()
-	user, ok := a.users.Users[userName]
-	if !ok {
-		a.users.userMtx.Unlock()
-		errmsg := fmt.Sprintf("User %s does not exist", userName)
-		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+	changed, err := a.users.updateCredentials(userID, provider, string(b))
+	if err != nil {
+		invalhdlr(w, r, fmt.Sprintf("Failed to update credentials: %v", err), http.StatusBadRequest)
 		return
 	}
-	if glog.V(4) {
-		if creds, ok := user.Creds[provider]; ok && creds != "" {
-			oldCreds := creds
-			if len(creds) > 32 {
-				oldCreds = creds[:32] + "..."
-			}
-			newCreds := string(b)
-			if len(newCreds) > 32 {
-				newCreds = newCreds[:32] + "..."
-			}
-			glog.Infof("Replacing user %s credentials: %s <- %s", userName, oldCreds, newCreds)
-		}
-	}
-	changed := user.Creds[provider] != string(b)
-	if changed {
-		user.Creds[provider] = string(b)
-	}
-	a.users.userMtx.Unlock()
 
 	if changed {
 		a.users.increaseVersion()
@@ -440,14 +419,13 @@ func (a *authServ) userChangeCredentials(w http.ResponseWriter, r *http.Request)
 		go a.users.sendCredsToProxy()
 	}
 
-	msg := []byte("Credentials updated successfully")
-	a.writeJSON(w, r, msg, "update credentials")
+	a.writeJSON(w, r, []byte("Credentials updated successfully"), "update credentials")
 }
 
 // Removes user credentials
 func (a *authServ) userRemoveCredentials(w http.ResponseWriter, r *http.Request) {
 	apiItems := a.restAPIItems(r.URL.Path, pathUsers)
-	userName := apiItems[0]
+	userID := apiItems[0]
 	provider := apiItems[1]
 	if !isValidProvider(provider) {
 		errmsg := fmt.Sprintf("Invalid cloud provider: %s", provider)
@@ -456,33 +434,21 @@ func (a *authServ) userRemoveCredentials(w http.ResponseWriter, r *http.Request)
 	}
 
 	if glog.V(4) {
-		glog.Infof("Removing %s credentials for %s\n", provider, userName)
+		glog.Infof("Removing %s credentials for %s\n", provider, userID)
 	}
 
-	a.users.userMtx.Lock()
-	user, ok := a.users.Users[userName]
-	if !ok {
-		a.users.userMtx.Unlock()
-		errmsg := fmt.Sprintf("User %s does not exist", userName)
-		invalhdlr(w, r, errmsg, http.StatusBadRequest)
+	changed, err := a.users.deleteCredentials(userID, provider)
+	if err != nil {
+		invalhdlr(w, r, fmt.Sprintf("Failed to delete credentials: %v", err), http.StatusBadRequest)
 		return
 	}
-	creds, ok := user.Creds[provider]
-	if !ok {
-		a.users.userMtx.Unlock()
-		glog.Infof("User %s does not have %s credentials - skipping", userName)
-		msg := []byte("Credentials updated successfully")
-		a.writeJSON(w, r, msg, "remove credentials")
+
+	if !changed {
+		// user did not have credentials before, so nothing changed and
+		// nothing to sync
+		a.writeJSON(w, r, []byte("Credentials updated successfully"), "update credentials")
 		return
 	}
-	if glog.V(4) {
-		if len(creds) > 32 {
-			creds = creds[:32] + "..."
-		}
-		glog.Infof("Removing user %s credentials: %s <- %s", userName, creds)
-	}
-	delete(user.Creds, provider)
-	a.users.userMtx.Unlock()
 
 	a.users.increaseVersion()
 	if err := a.users.saveUsers(); err != nil {
@@ -490,6 +456,5 @@ func (a *authServ) userRemoveCredentials(w http.ResponseWriter, r *http.Request)
 	}
 	go a.users.sendCredsToProxy()
 
-	msg := []byte("Credentials updated successfully")
-	a.writeJSON(w, r, msg, "update credentials")
+	a.writeJSON(w, r, []byte("Credentials updated successfully"), "update credentials")
 }

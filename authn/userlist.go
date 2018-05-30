@@ -427,3 +427,56 @@ func (m *userManager) sendCredsToProxy() {
 		glog.Errorf("Failed to send credentials list: %v", err)
 	}
 }
+
+func (m *userManager) updateCredentials(userID, provider, userCreds string) (bool, error) {
+	m.userMtx.Lock()
+	defer m.userMtx.Unlock()
+
+	user, ok := m.Users[userID]
+	if !ok {
+		err := fmt.Errorf("User %s does not exist", userID)
+		return false, err
+	}
+	if glog.V(4) {
+		if creds, ok := user.Creds[provider]; ok && creds != "" {
+			oldCreds := creds
+			if len(creds) > 32 {
+				oldCreds = creds[:32] + "..."
+			}
+			newCreds := userCreds
+			if len(newCreds) > 32 {
+				newCreds = newCreds[:32] + "..."
+			}
+			glog.Infof("Replacing user %s credentials: %s <- %s", userID, oldCreds, newCreds)
+		}
+	}
+	changed := user.Creds[provider] != userCreds
+	if changed {
+		user.Creds[provider] = userCreds
+	}
+
+	return changed, nil
+}
+
+func (m *userManager) deleteCredentials(userID, provider string) (bool, error) {
+	m.userMtx.Lock()
+	defer m.userMtx.Unlock()
+
+	user, ok := m.Users[userID]
+	if !ok {
+		return false, fmt.Errorf("User %s does not exist", userID)
+	}
+	creds, ok := user.Creds[provider]
+	if !ok {
+		glog.Infof("User %s does not have %s credentials - skipping", userID)
+		return false, nil
+	}
+	if glog.V(4) {
+		if len(creds) > 32 {
+			creds = creds[:32] + "..."
+		}
+		glog.Infof("Removing user %s credentials: %s", userID, creds)
+	}
+	delete(user.Creds, provider)
+	return true, nil
+}

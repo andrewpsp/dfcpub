@@ -747,7 +747,11 @@ func (t *targetrunner) httpbckhead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !islocal {
-		bucketprops, errstr, errcode = getcloudif().headbucket(t.contextWithAuth(r), bucket)
+		if bucket == tier2Bucket {
+			bucketprops, errstr, errcode = t.dfcHeadBucket(t.contextWithAuth(r), bucket)
+		} else {
+			bucketprops, errstr, errcode = getcloudif().headbucket(t.contextWithAuth(r), bucket)
+		}
 		if errstr != "" {
 			if errcode == 0 {
 				t.invalmsghdlr(w, r, errstr)
@@ -1116,9 +1120,16 @@ func (t *targetrunner) coldget(ct context.Context, bucket, objname string, prefe
 		goto ret
 	}
 	// cold
-	if props, errstr, errcode = getcloudif().getobj(ct, getfqn, bucket, objname); errstr != "" {
-		t.rtnamemap.unlockname(uname, true)
-		return
+	if bucket == tier2Bucket {
+		if props, errstr, errcode = t.dfcGetObject(ct, getfqn, bucket, objname); errstr != "" {
+			t.rtnamemap.unlockname(uname, true)
+			return
+		}
+	} else {
+		if props, errstr, errcode = getcloudif().getobj(ct, getfqn, bucket, objname); errstr != "" {
+			t.rtnamemap.unlockname(uname, true)
+			return
+		}
 	}
 	defer func() {
 		if errstr != "" {
@@ -1393,6 +1404,14 @@ func (t *targetrunner) listbucket(w http.ResponseWriter, r *http.Request, bucket
 		errstr  string
 		errcode int
 	)
+	// if bucket == hardcoded name, go to docker container (tier 2)
+	if bucket == tier2Bucket {
+		tag = "dfc"
+		jsbytes, errstr, errcode = t.dfcListBucket(t.contextWithAuth(r), bucket, r)
+		ok = t.writeJSON(w, r, jsbytes, "listbucket")
+		return
+	}
+
 	islocal, errstr, errcode := t.checkLocalQueryParameter(bucket, r)
 	if errstr != "" {
 		t.invalmsghdlr(w, r, errstr, errcode)
@@ -1419,6 +1438,7 @@ func (t *targetrunner) listbucket(w http.ResponseWriter, r *http.Request, bucket
 		tag = "cloud cached"
 		jsbytes, errstr, errcode = t.listCachedObjects(bucket, msg)
 	} else {
+		// another fork here? Either go to another DFC tier or cloud
 		tag = "cloud"
 		jsbytes, errstr, errcode = getcloudif().listbucket(t.contextWithAuth(r), bucket, msg)
 	}
@@ -1874,7 +1894,11 @@ func (t *targetrunner) fildelete(ct context.Context, bucket, objname string, evi
 	defer t.rtnamemap.unlockname(uname, true)
 
 	if !localbucket && !evict {
-		errstr, errcode = getcloudif().deleteobj(ct, bucket, objname)
+		if bucket == tier2Bucket {
+			errstr, errcode = t.dfcDeleteObj(ct, bucket, objname)
+		} else {
+			errstr, errcode = getcloudif().deleteobj(ct, bucket, objname)
+		}
 		if errstr != "" {
 			if errcode == 0 {
 				return fmt.Errorf("%s", errstr)

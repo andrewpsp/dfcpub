@@ -12,15 +12,24 @@ import (
 	"net/http"
 )
 
+// NOTE: This code can be cleaned up and optimized in many ways.
+// It is expected that a bit portion of it will be refactored/rewritten.
+// For now, this implementation is a cheap way of prototyping
+// and testing DFC => DFC (i.e. multi-tier) relationships.
+
 const (
 	// URL of the tier-2 DFC proxy
 	proxyURL    = "http://localhost:8082"
 	tier2Bucket = "nvdfc"
 )
 
+// The following five APIs are symmetric with ones provided in aws.go and gcp.go, except for these missing APIs:
+// 1. getbucketnames
+// 2. putobj
+
 func (t *targetrunner) dfcListBucket(ct context.Context, bucket string, r *http.Request) (jsbytes []byte, errstr string, errcode int) {
 	var (
-		url = proxyURL + "/" + Rversion + "/" + Rbuckets + "/" + bucket
+		url = proxyURL + URLPath(Rversion, Rbuckets, bucket)
 	)
 
 	req, err := http.NewRequest("GET", url, r.Body)
@@ -55,7 +64,7 @@ func (t *targetrunner) dfcListBucket(ct context.Context, bucket string, r *http.
 
 func (t *targetrunner) dfcHeadBucket(ct context.Context, bucket string) (bucketprops simplekvs, errstr string, errcode int) {
 	var (
-		url = proxyURL + "/" + Rversion + "/" + Rbuckets + "/" + bucket
+		url = proxyURL + URLPath(Rversion, Rbuckets, bucket)
 	)
 	bucketprops = make(simplekvs)
 
@@ -81,7 +90,7 @@ func (t *targetrunner) dfcHeadBucket(ct context.Context, bucket string) (bucketp
 
 func (t *targetrunner) dfcHeadObject(ct context.Context, bucket string, objname string) (objmeta simplekvs, errstr string, errcode int) {
 	var (
-		url = proxyURL + "/" + Rversion + "/" + Robjects + "/" + bucket + "/" + objname
+		url = proxyURL + URLPath(Rversion, Robjects, bucket, objname)
 	)
 	objmeta = make(simplekvs)
 
@@ -111,7 +120,7 @@ func (t *targetrunner) dfcHeadObject(ct context.Context, bucket string, objname 
 
 func (t *targetrunner) dfcGetObject(ct context.Context, fqn, bucket, objname string) (props *objectProps, errstr string, errcode int) {
 	var (
-		url = proxyURL + "/" + Rversion + "/" + Robjects + "/" + bucket + "/" + objname
+		url = proxyURL + URLPath(Rversion, Robjects, bucket, objname)
 	)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -139,7 +148,7 @@ func (t *targetrunner) dfcGetObject(ct context.Context, fqn, bucket, objname str
 
 func (t *targetrunner) dfcDeleteObj(ct context.Context, bucket, objname string) (errstr string, errcode int) {
 	var (
-		url = proxyURL + "/" + Rversion + "/" + Robjects + "/" + bucket + "/" + objname
+		url = proxyURL + URLPath(Rversion, Robjects, bucket, objname)
 	)
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)

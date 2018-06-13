@@ -1757,6 +1757,9 @@ func (t *targetrunner) putCommit(ct context.Context, bucket, objname, putfqn, fq
 			errstr = fmt.Sprintf("Failed to reopen %s err: %v", putfqn, err)
 			return
 		}
+		if bucket == tier2Bucket {
+			assert(false, "DFC => DFC object PUT not yet implemented")
+		}
 		if objprops.version, errstr, errcode = getcloudif().putobj(ct, file, bucket, objname, objprops.nhobj); errstr != "" {
 			_ = file.Close()
 			return

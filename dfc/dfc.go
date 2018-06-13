@@ -14,7 +14,7 @@ import (
 
 const (
 	// URL of the tier-2 DFC proxy
-	proxyURL    = "http://localhost:8080"
+	proxyURL    = "http://localhost:8082"
 	tier2Bucket = "nvdfc"
 )
 

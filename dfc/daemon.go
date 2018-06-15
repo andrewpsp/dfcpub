@@ -29,6 +29,8 @@ const (
 	xfskeeper     = "fskeeper"
 	xatime        = "atime"
 	xmetasyncer   = "metasyncer"
+
+	primaryTier = 0
 )
 
 type (
@@ -109,10 +111,10 @@ func (r *namedrunner) setname(n string) { r.name = n }
 //
 //====================
 var (
-	build     string
-	ctx       = &daemon{}
-	clivars   = &cliVars{}
-	smapLock  = &sync.Mutex{}
+	build          string
+	ctx            = &daemon{}
+	clivars        = &cliVars{}
+	smapLock       = &sync.Mutex{}
 	bucketMetaLock = &sync.Mutex{}
 )
 

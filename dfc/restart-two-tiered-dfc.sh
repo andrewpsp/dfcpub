@@ -17,6 +17,6 @@ echo "Deploying new tier 1 DFC cluster (proxy on port 8082)..."
 export PORT=8082
 docker run -di -v ~/.aws/credentials:/root/.aws/credentials \
                -v ~/.aws/config:/root/.aws/config \
-               -p 8082:8082 aistorage/dfc-quick-start
+               -p 8082:8082 liangdrew/dfc
 ./../docker/quick_start/quick_start_dfc.sh
 unset PORT

@@ -55,11 +55,10 @@ const (
 //
 //==============================
 type dfconfig struct {
-	Confdir       string `json:"confdir"`
-	CloudProvider string `json:"cloudprovider"`
-	CloudBuckets  string `json:"cloud_buckets"`
-	LocalBuckets  string `json:"local_buckets"`
-	// structs
+	Confdir          string            `json:"confdir"`
+	CloudProvider    string            `json:"cloudprovider"`
+	CloudBuckets     string            `json:"cloud_buckets"`
+	LocalBuckets     string            `json:"local_buckets"`
 	Log              logconfig         `json:"log"`
 	Periodic         periodic          `json:"periodic"`
 	Timeout          timeoutconfig     `json:"timeout"`
@@ -76,6 +75,7 @@ type dfconfig struct {
 	Auth             authconf          `json:"auth"`
 	KeepaliveTracker keepaliveTrackers `json:"keepalivetracker"`
 	CallStats        callStats         `json:"callstats"`
+	TierIndex        int               `json:"tier_index"`
 }
 
 type logconfig struct {

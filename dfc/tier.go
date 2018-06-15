@@ -17,8 +17,7 @@ import (
 // For now, this implementation is a cheap way of prototyping
 // and testing DFC => DFC (i.e. multi-tier) relationships.
 
-const (
-	// URL of the tier-2 DFC proxy
+var (
 	proxyURL    = "http://localhost:8082"
 	tier2Bucket = "nvdfc"
 )
@@ -88,37 +87,22 @@ func (t *targetrunner) dfcHeadBucket(ct context.Context, bucket string) (bucketp
 	return
 }
 
-func (t *targetrunner) dfcHeadObject(ct context.Context, bucket string, objname string) (objmeta simplekvs, errstr string, errcode int) {
+func (t *targetrunner) objectInNextTier(nextURL, bucket, objname string) bool {
 	var (
-		url = proxyURL + URLPath(Rversion, Robjects, bucket, objname)
+		url = nextURL + URLPath(Rversion, Robjects, bucket, objname) + fmt.Sprintf(
+			"?%s=true", URLParamCheckCached)
 	)
-	objmeta = make(simplekvs)
-
 	r, err := t.httprunner.httpclientLongTimeout.Head(url)
 	if err != nil {
-		return objmeta, err.Error(), 1
+		return false
 	}
 	if r != nil && r.StatusCode >= http.StatusBadRequest {
-		b, ioErr := ioutil.ReadAll(r.Body)
-		if ioErr != nil {
-			err = fmt.Errorf("failed to read response body, err = %s", ioErr)
-			return objmeta, err.Error(), 2
-		}
-		err = fmt.Errorf("head bucket/object: %s/%s failed, HTTP status code: %d, HTTP response body: %s",
-			bucket, objname, r.StatusCode, string(b))
-		return objmeta, err.Error(), 3
+		return false
 	}
-	objmeta[CloudProvider] = r.Header.Get(CloudProvider)
-	if s := r.Header.Get(Size); s != "" {
-		objmeta[Size] = s
-	}
-	if v := r.Header.Get(Version); v != "" {
-		objmeta[Version] = v
-	}
-	return
+	return true
 }
 
-func (t *targetrunner) dfcGetObject(ct context.Context, fqn, bucket, objname string) (props *objectProps, errstr string, errcode int) {
+func (t *targetrunner) dfcGetObject(fqn, bucket, objname string) (props *objectProps, errstr string, errcode int) {
 	var (
 		url = proxyURL + URLPath(Rversion, Robjects, bucket, objname)
 	)

@@ -1073,13 +1073,15 @@ func (t *targetrunner) getFromNeighbor(bucket, objname string, r *http.Request, 
 
 func (t *targetrunner) coldget(ct context.Context, bucket, objname string, prefetch bool) (props *objectProps, errstr string, errcode int) {
 	var (
-		fqn        = t.fqn(bucket, objname)
-		uname      = uniquename(bucket, objname)
-		getfqn     = t.fqn2workfile(fqn)
-		versioncfg = &ctx.config.Ver
-		cksumcfg   = &ctx.config.Cksum
-		errv       = ""
-		vchanged   = false
+		fqn              = t.fqn(bucket, objname)
+		uname            = uniquename(bucket, objname)
+		getfqn           = t.fqn2workfile(fqn)
+		versioncfg       = &ctx.config.Ver
+		cksumcfg         = &ctx.config.Cksum
+		isLocal          = t.bucketmd.islocal(bucket)
+		errv             string
+		vchanged         bool
+		objectInNextTier bool
 	)
 	// one cold GET at a time
 	if prefetch {
@@ -1092,7 +1094,7 @@ func (t *targetrunner) coldget(ct context.Context, bucket, objname string, prefe
 	}
 	// existence, access & versioning
 	coldget, size, version, eexists := t.lookupLocally(bucket, objname, fqn)
-	if !coldget && eexists == "" && !t.bucketmd.islocal(bucket) {
+	if !coldget && eexists == "" && !isLocal {
 		if versioncfg.ValidateWarmGet && version != "" && t.versioningConfigured(bucket) {
 			vchanged, errv, _ = t.checkCloudVersion(ct, bucket, objname, version)
 			if errv == "" {
@@ -1120,12 +1122,23 @@ func (t *targetrunner) coldget(ct context.Context, bucket, objname string, prefe
 		goto ret
 	}
 	// cold
-	if bucket == tier2Bucket {
-		if props, errstr, errcode = t.dfcGetObject(ct, getfqn, bucket, objname); errstr != "" {
+	if _, p := t.bucketmd.get(bucket, isLocal); ctx.config.TierIndex == primaryTier &&
+		p[URLParamCloudProvider] == ProviderDfc {
+
+		fmt.Println()
+		fmt.Println("doing HEAD object on second tier...")
+		objectInNextTier = t.objectInNextTier(p[URLParamNextTierURL], bucket, objname)
+	}
+	if objectInNextTier {
+		fmt.Println("found object on second tier, doing GET on second tier...")
+		if props, errstr, errcode = t.dfcGetObject(getfqn, bucket, objname); errstr != "" {
 			t.rtnamemap.unlockname(uname, true)
 			return
 		}
 	} else {
+		if ctx.config.TierIndex == primaryTier {
+			fmt.Println("did NOT find object on second tier, doing GET on cloud...")
+		}
 		if props, errstr, errcode = getcloudif().getobj(ct, getfqn, bucket, objname); errstr != "" {
 			t.rtnamemap.unlockname(uname, true)
 			return

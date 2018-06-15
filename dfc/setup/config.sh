@@ -111,7 +111,8 @@
 	"callstats": {
 		"request_included": [ "keepalive", "metasync" ],
 		"factor": 2.5
-	}
+	},
+	"tier_index": 1
 }
 EOL
 

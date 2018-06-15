@@ -25,5 +25,7 @@ RUN python get-pip.py
 RUN pip install awscli
 RUN rm -rf go$GOLANG_VERSION.linux-amd64.tar.gz
 
-RUN go get -u -v github.com/NVIDIA/dfcpub/dfc && cd $WORKDIR
+RUN go get -u -v github.com/NVIDIA/dfcpub/dfc &&\
+    cd $WORKDIR &&\
+    git checkout tier-prototype
 WORKDIR $WORKDIR

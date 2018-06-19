@@ -7,6 +7,7 @@ package dfc_test
 
 import (
 	"bytes"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +19,7 @@ import (
 
 func TestGetObjectInNextTier(t *testing.T) {
 	var (
-		object = "multitier-test-object"
+		object = "TestGetObjectInNextTier"
 		data   = []byte("this is the object you want!")
 	)
 
@@ -50,7 +51,7 @@ func TestGetObjectInNextTier(t *testing.T) {
 
 func TestGetObjectInNextTierErrorOnGet(t *testing.T) {
 	var (
-		object = "multitier-test-object"
+		object = "TestGetObjectInNextTierErrorOnGet"
 		data   = []byte("this is the object you want!")
 	)
 
@@ -93,6 +94,7 @@ func TestGetObjectInNextTierErrorOnGet(t *testing.T) {
 
 	n, _, err := client.Get(proxyurl, clibucket, object, nil, nil, false, false)
 	checkFatal(err, t)
+
 	if int(n) != len(data) {
 		t.Errorf("Expected object size: %d bytes, actual: %d bytes", len(data), int(n))
 	}
@@ -100,7 +102,7 @@ func TestGetObjectInNextTierErrorOnGet(t *testing.T) {
 
 func TestGetObjectNotInNextTier(t *testing.T) {
 	var (
-		object   = "multitier-get-test-object"
+		object   = "TestGetObjectNotInNextTier"
 		data     = []byte("this is some other object - not the one you want!")
 		filesize = 1024
 	)
@@ -117,6 +119,7 @@ func TestGetObjectNotInNextTier(t *testing.T) {
 				w.Write(data)
 			} else {
 				http.Error(w, "bad request", http.StatusBadRequest)
+
 			}
 		}
 	}))
@@ -139,12 +142,133 @@ func TestGetObjectNotInNextTier(t *testing.T) {
 
 	n, _, err := client.Get(proxyurl, clibucket, object, nil, nil, false, false)
 	checkFatal(err, t)
+
 	if int(n) != filesize {
 		t.Errorf("Expected object size: %d bytes, actual: %d bytes", filesize, int(n))
 	}
 
 	if err = client.Del(proxyurl, clibucket, object, nil, nil, true); err != nil {
-		t.Logf("bucket/object: %s/%s not deleted, err: %v", clibucket, object, err)
+		t.Errorf("bucket/object: %s/%s not deleted, err: %v", clibucket, object, err)
+	}
+}
+
+func TestPutObjectNextTierPolicy(t *testing.T) {
+	var (
+		object = "TestPutObjectNextTierPolicy"
+		data   = []byte("these contents should not change!")
+	)
+
+	if !isCloudBucket(t, proxyurl, clibucket) {
+		t.Skipf("skipping test - bucket: %s is not a cloud bucket", clibucket)
+	}
+
+	nextTierMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == dfc.URLPath(dfc.Rversion, dfc.Robjects, clibucket, object) && r.Method == http.MethodPut {
+			b, err := ioutil.ReadAll(r.Body)
+			checkFatal(err, t)
+			expected := string(data)
+			received := string(b)
+			if expected != received {
+				t.Errorf("Expected object data: %s, received object data: %s", expected, received)
+			}
+		} else {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}
+	}))
+	defer nextTierMock.Close()
+
+	err := client.SetBucketProps(proxyurl, clibucket, dfc.BucketProps{
+		CloudProvider: dfc.ProviderDfc,
+		NextTierURL:   nextTierMock.URL,
+		WritePolicy:   dfc.RWPolicyNextTier})
+	checkFatal(err, t)
+	defer resetBucketProps(clibucket, t)
+
+	u := proxyurl + dfc.URLPath(dfc.Rversion, dfc.Robjects, clibucket, object)
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(data))
+	checkFatal(err, t)
+
+	resp, err := http.DefaultClient.Do(req)
+	checkFatal(err, t)
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		t.Errorf("Expected status code 200, received status code %d", resp.StatusCode)
+	}
+}
+
+func TestPutObjectNextTierPolicyErrorOnPut(t *testing.T) {
+	var (
+		object = "TestPutObjectNextTierPolicyErrorOnPut"
+		data   = []byte("this object will go to the cloud!")
+	)
+
+	if !isCloudBucket(t, proxyurl, clibucket) {
+		t.Skipf("skipping test - bucket: %s is not a cloud bucket", clibucket)
+	}
+
+	nextTierMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "some arbitrary internal server error", http.StatusInternalServerError)
+	}))
+	defer nextTierMock.Close()
+
+	err := client.SetBucketProps(proxyurl, clibucket, dfc.BucketProps{
+		CloudProvider: dfc.ProviderDfc,
+		NextTierURL:   nextTierMock.URL,
+		WritePolicy:   dfc.RWPolicyNextTier})
+	checkFatal(err, t)
+	defer resetBucketProps(clibucket, t)
+
+	u := proxyurl + dfc.URLPath(dfc.Rversion, dfc.Robjects, clibucket, object)
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(data))
+	checkFatal(err, t)
+
+	resp, err := http.DefaultClient.Do(req)
+	checkFatal(err, t)
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		t.Errorf("Expected status code 200, received status code %d", resp.StatusCode)
+	}
+
+	if err = client.Del(proxyurl, clibucket, object, nil, nil, true); err != nil {
+		t.Errorf("bucket/object: %s/%s not deleted, err: %v", clibucket, object, err)
+	}
+}
+
+func TestPutObjectCloudPolicy(t *testing.T) {
+	var (
+		object = "TestPutObjectCloudPolicy"
+		data   = []byte("this object will go to the cloud!")
+	)
+
+	if !isCloudBucket(t, proxyurl, clibucket) {
+		t.Skipf("skipping test - bucket: %s is not a cloud bucket", clibucket)
+	}
+
+	nextTierMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer nextTierMock.Close()
+
+	err := client.SetBucketProps(proxyurl, clibucket, dfc.BucketProps{
+		CloudProvider: dfc.ProviderDfc,
+		NextTierURL:   nextTierMock.URL,
+		WritePolicy:   dfc.RWPolicyCloud})
+	checkFatal(err, t)
+	defer resetBucketProps(clibucket, t)
+
+	u := proxyurl + dfc.URLPath(dfc.Rversion, dfc.Robjects, clibucket, object)
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(data))
+	checkFatal(err, t)
+
+	resp, err := http.DefaultClient.Do(req)
+	checkFatal(err, t)
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		t.Errorf("Expected status code 200, received status code %d", resp.StatusCode)
+	}
+
+	if err = client.Del(proxyurl, clibucket, object, nil, nil, true); err != nil {
+		t.Errorf("bucket/object: %s/%s not deleted, err: %v", clibucket, object, err)
 	}
 }
 

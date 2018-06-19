@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"time"
 
+	"bytes"
+
 	"github.com/NVIDIA/dfcpub/3rdparty/glog"
 	"github.com/NVIDIA/dfcpub/dfc/statsd"
 	"github.com/OneOfOne/xxhash"
@@ -1813,27 +1815,41 @@ func (t *targetrunner) putCommit(ct context.Context, bucket, objname, putfqn, fq
 func (t *targetrunner) doPutCommit(ct context.Context, bucket, objname, putfqn, fqn string,
 	objprops *objectProps, rebalance bool) (errstr string, errcode int, err error, renamed bool) {
 	var (
-		file          *os.File
-		isBucketLocal = t.bmdowner.get().islocal(bucket)
+		file     *os.File
+		bucketmd = t.bmdowner.get()
+		islocal  = bucketmd.islocal(bucket)
 	)
-	// cloud
-	if !isBucketLocal && !rebalance {
+
+	if !islocal && !rebalance {
 		if file, err = os.Open(putfqn); err != nil {
 			errstr = fmt.Sprintf("Failed to reopen %s err: %v", putfqn, err)
 			return
 		}
-		if objprops.version, errstr, errcode = getcloudif().putobj(ct, file, bucket, objname, objprops.nhobj); errstr != "" {
-			_ = file.Close()
-			return
+		_, p := bucketmd.get(bucket, islocal)
+		if p.NextTierURL != "" && p.WritePolicy == RWPolicyNextTier {
+			var buf bytes.Buffer
+			tee := io.TeeReader(file, &buf)
+
+			if errstr, errcode = t.putObjectNextTier(p.NextTierURL, bucket, objname, tee); errstr != "" {
+				glog.Errorf("Error putting object to next tier, err: %s, HTTP status code: %d", errstr, errcode)
+				if e := ioutil.WriteFile(putfqn, buf.Bytes(), 0644); e != nil {
+					errstr = e.Error()
+					glog.Errorf("Error writing buffer back to file, err: %s", errstr)
+					return
+				}
+				objprops.version, errstr, errcode = getcloudif().putobj(ct, file, bucket, objname, objprops.nhobj)
+			}
+		} else {
+			fmt.Println("putting to cloud")
+			objprops.version, errstr, errcode = getcloudif().putobj(ct, file, bucket, objname, objprops.nhobj)
 		}
-		if err = file.Close(); err != nil {
-			glog.Errorf("Unexpected failure to close an already PUT file %s, err: %v", putfqn, err)
-			_ = os.Remove(putfqn)
+		_ = file.Close()
+		if errstr != "" {
 			return
 		}
 	}
 
-	if isBucketLocal && t.versioningConfigured(bucket) {
+	if islocal && t.versioningConfigured(bucket) {
 		if objprops.version, errstr = t.increaseObjectVersion(fqn); errstr != "" {
 			return
 		}

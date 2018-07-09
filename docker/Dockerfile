@@ -7,6 +7,9 @@ ENV ROLE proxy
 ENV TARGETS 1000
 ENV GOPATH /go
 ENV GOBIN /go/bin
+ENV K8 /k8/bin
+ENV CERT /cert/cfssl
+ENV DB /db/db.json
 ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
 ENV WORKDIR $GOPATH/src/github.com/NVIDIA/dfcpub/dfc
 
